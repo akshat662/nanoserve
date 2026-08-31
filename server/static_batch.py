@@ -48,6 +48,7 @@ class StaticBatchEngine:
         self.cache = engine.cache
         self.tokenizer = engine.tokenizer
         self._pending: list[Request] = []
+        self._waste_totals = {"prefill_useful": 0, "prefill_total": 0, "decode_useful": 0, "decode_total": 0}
 
     def generate(self, requests: list[Request]) -> tuple[list[SequenceState], WasteStats]:
         seqs = [
@@ -100,9 +101,19 @@ class StaticBatchEngine:
     def step(self) -> list[SequenceState]:
         """Drains whatever is currently pending and runs it as one static
         batch to completion — a request that arrives mid-batch simply waits
-        for the next step()."""
+        for the next step(). Each call's waste accumulates into
+        cumulative_waste() since a single step() only covers one round under
+        concurrency higher than max_slots; call reset_waste() to start over."""
         if not self._pending:
             return []
         batch, self._pending = self._pending, []
-        seqs, _waste = self.generate(batch)
+        seqs, waste = self.generate(batch)
+        for key in self._waste_totals:
+            self._waste_totals[key] += getattr(waste, key)
         return seqs
+
+    def cumulative_waste(self) -> WasteStats:
+        return WasteStats.compute(**self._waste_totals)
+
+    def reset_waste(self) -> None:
+        self._waste_totals = dict.fromkeys(self._waste_totals, 0)

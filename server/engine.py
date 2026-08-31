@@ -58,6 +58,9 @@ class Engine:
         self._active: list[SequenceState] = []
 
     def _mark_if_finished(self, seq: SequenceState, token_id: int, now: float) -> None:
+        # TIMING RULE (CLAUDE.md "Timing rules"): `now` must already be a
+        # post-sync timestamp handed in by the caller — this method performs
+        # no GPU synchronization of its own, so it cannot fix a bad `now`.
         if token_id in self.eos_token_ids:
             seq.finished = True
             seq.finish_reason = "stop"
@@ -112,14 +115,16 @@ class Engine:
             "left-padding invariant violated: every sequence's last real token must land in the "
             "final column, but at least one row has padding there"
         )
-        next_tokens = torch.argmax(out.logits[:, -1, :], dim=-1)
-
+        # .tolist() forces the device-to-host sync in one shot; capturing `now`
+        # only after it returns means the timestamp reflects work actually
+        # finished, not merely enqueued (matters on CUDA, a no-op on CPU).
+        next_tokens = torch.argmax(out.logits[:, -1, :], dim=-1).tolist()
         now = time.time()
         for i, (seq, length) in enumerate(zip(seqs, lengths)):
             seq.metrics.first_token_time = now
             seq.cache_len = int(self.cache.cache_len[seq.slot_id].item())
             seq.next_position = length
-            token_id = int(next_tokens[i].item())
+            token_id = next_tokens[i]
             seq.output_token_ids.append(token_id)
             self._mark_if_finished(seq, token_id, now)
 
@@ -141,11 +146,12 @@ class Engine:
             out = self.model(
                 input_ids, attention_mask=mask, position_ids=position_ids, past_key_values=self.cache, use_cache=True
             )
-        next_tokens = torch.argmax(out.logits[:, -1, :], dim=-1)
-
+        # see prefill(): materialize before timestamping so `now` reflects
+        # completed work, not just an enqueued kernel, when running on CUDA.
+        next_tokens = torch.argmax(out.logits[:, -1, :], dim=-1).tolist()
         now = time.time()
         for i, seq in enumerate(seqs):
-            token_id = int(next_tokens[i].item())
+            token_id = next_tokens[i]
             seq.output_token_ids.append(token_id)
             seq.cache_len = int(self.cache.cache_len[seq.slot_id].item())
             seq.next_position += 1
