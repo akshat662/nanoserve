@@ -1,0 +1,8 @@
+model_id: Qwen/Qwen2.5-0.5B-Instruct
+device: auto
+dtype: float32
+attn_implementation: sdpa
+max_slots: 32
+max_seq_len: 1024
+max_new_tokens: 128
+batch_token_budget: 8192

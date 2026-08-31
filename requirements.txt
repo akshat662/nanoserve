@@ -1,0 +1,10 @@
+# versions pinned after first successful install — see README
+torch
+transformers
+fastapi
+uvicorn
+pydantic
+pyyaml
+openai
+pytest
+numpy
