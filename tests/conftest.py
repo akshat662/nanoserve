@@ -180,3 +180,17 @@ def assert_batch_matches_singles(engine, requests: list[Request], label: str = "
 def twenty_prompt_stats(shared_engine) -> BatchVsSingleStats:
     requests = [make_request(shared_engine.tokenizer, p, NUM_NEW_TOKENS, f"cv-{i}") for i, p in enumerate(TWENTY_PROMPTS)]
     return assert_batch_matches_singles(shared_engine, requests, label="cv20")
+
+
+@pytest.fixture
+def app_client(shared_engine):
+    """A TestClient wired to the session's shared_engine, so hitting the API
+    in tests never triggers a second model load."""
+    from fastapi.testclient import TestClient
+
+    from server.app import app
+
+    app.state.config = shared_engine.config
+    app.state.engine = shared_engine
+    with TestClient(app) as client:
+        yield client

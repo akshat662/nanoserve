@@ -20,6 +20,7 @@ class ServerConfig:
     max_seq_len: int
     max_new_tokens: int
     batch_token_budget: int
+    engine: str
 
 
 def load_config(path: str = "configs/default.yaml") -> ServerConfig:
@@ -41,4 +42,5 @@ def load_config(path: str = "configs/default.yaml") -> ServerConfig:
         max_seq_len=raw["max_seq_len"],
         max_new_tokens=raw["max_new_tokens"],
         batch_token_budget=raw["batch_token_budget"],
+        engine=raw.get("engine", "engine"),
     )
