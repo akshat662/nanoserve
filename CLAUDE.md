@@ -17,3 +17,21 @@ These constraints are load-bearing. Do not relax them without explicit instructi
   quantization, multi-GPU, sampling (greedy only), custom CUDA/Triton kernels.
 - Target size: ~700 lines total across 7 source files. Resist scope growth.
 - Every file must have a stated verification criterion that is run before moving on.
+
+## Verified environment facts (Gate 0, 31 Aug 2026)
+
+- transformers 5.16.1, torch 2.13.0. Do NOT assume the transformers 4.x Cache API.
+- `past_key_values` is a `DynamicCache` object, never a legacy tuple.
+  `cache_position` is accepted but absorbed via **kwargs, not a named forward param.
+- `eos_token_id` is a LIST: [151645, 151643]. Finish detection must be
+  `token_id in eos_token_ids`, never `token_id == eos_token_id`.
+- sdpa accepts an explicit 4D additive attention mask of shape [B, 1, q_len, kv_len]
+  (0.0 attendable, torch.finfo(dtype).min masked). Verified logit delta exactly 0.0
+  against the default mask. Build masks ourselves; do not fall back to eager.
+- Qwen's shipped `generation_config` bakes in `repetition_penalty=1.1`, and it stays
+  active under `do_sample=False` because it is a logits processor, not a sampling
+  warper. Our engine does PURE ARGMAX with no penalty. Therefore any comparison
+  against `model.generate()` MUST pass `repetition_penalty=1.0`, or it will not match.
+- Verified KV cache arithmetic: 2 * 24 layers * 2 kv_heads * 64 head_dim = 12288
+  bytes/token fp16, 24576 fp32. At 32 slots x 1024 max_seq_len: 384 MB fp16,
+  768 MB fp32. These are the numbers that go in the README, not estimates.

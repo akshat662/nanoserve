@@ -1,10 +1,10 @@
-# versions pinned after first successful install — see README
-torch
-transformers
-fastapi
-uvicorn
-pydantic
-pyyaml
-openai
-pytest
-numpy
+# cache code (server/) is written against transformers==5.16.1 — do not assume the 4.x Cache API
+torch==2.13.0
+transformers==5.16.1
+fastapi==0.141.1
+uvicorn==0.52.4
+pydantic==2.13.5
+pyyaml==6.0.3
+openai==3.6.0
+pytest==9.1.1
+numpy==2.5.2
