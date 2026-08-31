@@ -33,9 +33,10 @@ from server.types import Request
 SEED = 42
 
 WORKLOADS = {
-    "short_prompt_long_gen": {"median_len": 20, "sigma": 0.5, "min_len": 8, "max_len": 60, "max_new_tokens": 128},
+    "short_prompt_long_gen": {"median_len": 80, "sigma": 0.6, "min_len": 40, "max_len": 250, "max_new_tokens": 128},
     "long_prompt_short_gen": {"median_len": 300, "sigma": 0.3, "min_len": 150, "max_len": 500, "max_new_tokens": 16},
 }
+MIN_STDEV_FRACTION_OF_MEAN = 0.2
 
 # OUTPUT-length variance comes from here: real question-shaped prompts spanning a
 # deliberate spread of natural answer lengths. Every request is built from the chat
@@ -101,9 +102,34 @@ def distribution_stats(values: list[float]) -> dict:
     return {"n": len(values), "min": float(arr.min()), "p50": float(np.percentile(arr, 50)), "max": float(arr.max()), "stdev": float(arr.std())}
 
 
-def _sample_prompt_len(rng: random.Random, workload: dict) -> int:
+def _sample_target_len(rng: random.Random, workload: dict, floor: int) -> int:
+    """Target is defined over the FINAL tokenized sequence — template overhead
+    + filler + question, the thing the engine actually pads — not raw prompt
+    text. `floor` is this specific question's own tokenized length (template
+    included, zero filler): a target below it is unreachable by construction
+    (you cannot un-ask the question), so it is clamped up to the floor
+    EXPLICITLY here rather than silently collapsing there via the filler loop
+    below doing zero iterations, which is what disguised every low sample as
+    an identical ~36-40 token prompt with no relation to what was sampled."""
     raw = rng.lognormvariate(math.log(workload["median_len"]), workload["sigma"])
-    return max(workload["min_len"], min(workload["max_len"], round(raw)))
+    target = max(workload["min_len"], min(workload["max_len"], round(raw)))
+    return max(target, floor)
+
+
+def assert_length_variance(lengths: list[int], workload_name: str) -> None:
+    """Fails loudly rather than silently reporting a misleadingly tiny waste
+    number: padding waste is a function of SPREAD, not absolute length, and a
+    workload whose realized stdev collapses relative to its mean cannot
+    demonstrate padding waste at all, whatever prefill_waste_frac says."""
+    mean = sum(lengths) / len(lengths)
+    stdev = distribution_stats(lengths)["stdev"]
+    if stdev < MIN_STDEV_FRACTION_OF_MEAN * mean:
+        raise AssertionError(
+            f"{workload_name}: realized prompt-length stdev ({stdev:.1f}) is under "
+            f"{MIN_STDEV_FRACTION_OF_MEAN:.0%} of the mean ({mean:.1f}) across n={len(lengths)} — "
+            "this workload cannot demonstrate padding waste with this little spread. "
+            "Fix the generator's distribution, don't report this number."
+        )
 
 
 def _chat_ids(tokenizer, content: str) -> list[int]:
@@ -128,11 +154,11 @@ def build_requests(tokenizer, workload: dict, max_new_tokens: int, n: int, tag: 
     requests, realized_lengths = [], []
     for i in range(n):
         rng = random.Random(f"{SEED}:{tag}:{i}")
-        target_len = _sample_prompt_len(rng, workload)
         question = rng.choice(_QUESTIONS[rng.choice(list(_QUESTIONS))])
 
         filler = ""
-        ids = _chat_ids(tokenizer, question)
+        ids = _chat_ids(tokenizer, question)  # template + bare question: this IS the floor
+        target_len = _sample_target_len(rng, workload, floor=len(ids))
         while len(ids) < target_len:
             filler = (filler + " " + rng.choice(_FILLER_FRAGMENTS)).strip()
             ids = _chat_ids(tokenizer, f"{filler}\n\n{question}")
@@ -202,7 +228,7 @@ class CellResult:
     per_request: list[dict]
 
 
-def measure_cell(engine_name, engine_obj, workload_name, workload, max_new_tokens, concurrency, stagger, warmups) -> CellResult:
+def measure_cell(engine_name, engine_obj, workload_name, workload, max_new_tokens, concurrency, stagger, warmups, num_requests) -> CellResult:
     # seed tag deliberately excludes engine_name: 'static' and 'engine' cells at the
     # same (workload, concurrency) must see IDENTICAL prompts for a fair comparison.
     seed_tag = f"{workload_name}-c{concurrency}"
@@ -213,8 +239,26 @@ def measure_cell(engine_name, engine_obj, workload_name, workload, max_new_token
     if hasattr(engine_obj, "reset_waste"):
         engine_obj.reset_waste()
 
-    reqs, prompt_lengths = build_requests(engine_obj.tokenizer, workload, max_new_tokens, concurrency, seed_tag)
-    finished, num_waited, wall_clock = run_workload(engine_obj, reqs, stagger)
+    # Ten samples make p95 meaningless — it's just the worst of ten. `concurrency`
+    # is the peak simultaneous load (each burst is admission-gated to that size
+    # by run_workload); num_requests is the TOTAL sample size percentiles and the
+    # length-variance check are computed over, run as sequential bursts of at
+    # most `concurrency` each so peak concurrency is still exactly `concurrency`.
+    num_bursts = math.ceil(num_requests / concurrency)
+    finished: list = []
+    num_waited = 0
+    wall_clock = 0.0
+    all_prompt_lengths: list[int] = []
+    for b in range(num_bursts):
+        burst_size = min(concurrency, num_requests - b * concurrency)
+        reqs, lens = build_requests(engine_obj.tokenizer, workload, max_new_tokens, burst_size, f"{seed_tag}-burst{b}")
+        all_prompt_lengths.extend(lens)
+        burst_finished, burst_waited, burst_wall_clock = run_workload(engine_obj, reqs, stagger)
+        finished.extend(burst_finished)
+        num_waited += burst_waited
+        wall_clock += burst_wall_clock
+
+    assert_length_variance(all_prompt_lengths, workload_name)
 
     output_tokens = sum(len(s.output_token_ids) for s in finished)
     ttft_ms = [s.metrics.ttft * 1000 for s in finished]
@@ -330,6 +374,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--concurrency", default="1,8,32", help="comma-separated concurrency levels")
     p.add_argument("--workload", choices=list(WORKLOADS), default=None, help="default: run both workloads")
     p.add_argument("--max-slots", type=int, default=8)
+    p.add_argument("--num-requests", type=int, default=32, help="total requests per concurrency cell (percentiles computed over all of them)")
     p.add_argument("--max-new-tokens", type=int, default=None, help="override every workload's own max_new_tokens")
     p.add_argument("--warmups", type=int, default=3)
     p.add_argument("--json", type=str, default=None)
@@ -383,7 +428,7 @@ def main() -> None:
                     continue
                 cell = measure_cell(
                     engine_name, engine_objs[engine_name], workload_name, workload,
-                    max_new_tokens, concurrency, args.stagger, args.warmups,
+                    max_new_tokens, concurrency, args.stagger, args.warmups, args.num_requests,
                 )
                 cells.append(cell)
                 all_results.append(cell)
