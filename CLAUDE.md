@@ -35,3 +35,12 @@ These constraints are load-bearing. Do not relax them without explicit instructi
 - Verified KV cache arithmetic: 2 * 24 layers * 2 kv_heads * 64 head_dim = 12288
   bytes/token fp16, 24576 fp32. At 32 slots x 1024 max_seq_len: 384 MB fp16,
   768 MB fp32. These are the numbers that go in the README, not estimates.
+- Two distinct correctness numbers exist and must never be conflated: single-sequence
+  vs DynamicCache = 0.000e+00 (bit-identical), and batch vs single = ~1.8e-04 (kernel
+  reduction-order noise from a different matmul batch shape, expected, not a defect).
+- Token identity across batch shapes holds because argmax margin exceeds that noise by
+  a measured factor of 166.2x (min argmax margin 3.027e-02 over max abs logit delta
+  1.822e-04, across 330 decode steps over 20 prompts). This is measured, not assumed —
+  see tests/test_numerics.py.
+- float16 is not safe for correctness work: it would shrink that safety ratio by
+  roughly three orders of magnitude.
