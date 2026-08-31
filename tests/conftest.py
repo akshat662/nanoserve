@@ -5,6 +5,7 @@ over the 20 CV prompts happens exactly once per test session, even though both
 test_engine.py and test_numerics.py need its result.
 """
 
+import dataclasses
 import sys
 import time
 from contextlib import contextmanager
@@ -48,6 +49,14 @@ TWENTY_PROMPTS = [
 @pytest.fixture(scope="session")
 def shared_engine():
     return Engine(load_config())
+
+
+@pytest.fixture(scope="session")
+def small_slots_engine():
+    """A dedicated Engine (own model load) with max_slots=3 — max_slots is
+    baked into the cache at construction time, so tests that need real slot
+    pressure can't just reuse shared_engine's default (much larger) cache."""
+    return Engine(dataclasses.replace(load_config(), max_slots=3))
 
 
 def make_request(tok, prompt: str, max_new_tokens: int, request_id: str) -> Request:

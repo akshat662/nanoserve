@@ -16,6 +16,7 @@ not have it silently absorbed by a late arrival_time.
 import argparse
 import dataclasses
 import json
+import math
 import random
 import time
 from pathlib import Path
@@ -25,21 +26,64 @@ import torch
 
 from server.config import ServerConfig, load_config
 from server.engine import Engine
+from server.scheduler import ContinuousBatchScheduler
 from server.static_batch import StaticBatchEngine
 from server.types import Request
 
 SEED = 42
 
 WORKLOADS = {
-    "short_prompt_long_gen": {"prompt_len": 20, "max_new_tokens": 128},
-    "long_prompt_short_gen": {"prompt_len": 300, "max_new_tokens": 16},
+    "short_prompt_long_gen": {"median_len": 20, "sigma": 0.5, "min_len": 8, "max_len": 60, "max_new_tokens": 128},
+    "long_prompt_short_gen": {"median_len": 300, "sigma": 0.3, "min_len": 150, "max_len": 500, "max_new_tokens": 16},
 }
 
-_FILLER_WORDS = (
-    "the quick brown fox jumps over lazy dog system engine cache token model batch "
-    "request server memory vector gradient learning network language context sequence "
-    "attention transformer query value layer weight matrix scalar tensor device thread"
-).split()
+# OUTPUT-length variance comes from here: real question-shaped prompts spanning a
+# deliberate spread of natural answer lengths. Every request is built from the chat
+# template (the server never sees raw completions), so EOS can fire the way it would
+# for a real client, and how quickly it fires depends on what is actually being asked.
+_QUESTIONS = {
+    "short_factual": [
+        "What is the capital of Japan?",
+        "What is the chemical symbol for gold?",
+        "How many continents are there on Earth?",
+        "What year did World War II end?",
+        "What is the boiling point of water in Celsius?",
+    ],
+    "medium_explanatory": [
+        "Explain what a hash table is.",
+        "Explain how photosynthesis works.",
+        "Describe the difference between a list and a tuple in Python.",
+        "Explain what DNS does on the internet.",
+        "Describe how a binary search algorithm works.",
+    ],
+    "open_ended": [
+        "Write a detailed comparison of TCP and UDP.",
+        "Write a detailed explanation of how neural networks are trained.",
+        "Write a thorough overview of the causes of the French Revolution.",
+        "Write a detailed guide to setting up a REST API in Python.",
+        "Write a comprehensive summary of how the immune system fights infection.",
+    ],
+}
+
+# PROMPT-length variance comes from here instead: filler context fragments prepended
+# to the real question purely to hit the sampled target token length. They never
+# change what is being asked, only how much padding surrounds it.
+_FILLER_FRAGMENTS = [
+    "The quick brown fox jumps over the lazy dog.",
+    "The weather today is unusually mild for this time of year.",
+    "She walked into the room and immediately noticed the strange silence.",
+    "He picked up the phone and dialed the number from memory.",
+    "The stock market experienced significant volatility during the third quarter.",
+    "The recipe calls for two cups of flour and a pinch of salt.",
+    "The train departed the station exactly on schedule.",
+    "Children played in the park while their parents watched from nearby benches.",
+    "Mountains loomed in the distance, their peaks dusted with early snow.",
+    "The committee will reconvene next Tuesday to finalize the budget proposal.",
+    "A gentle breeze carried the scent of fresh rain through the open window.",
+    "Visitors are encouraged to explore the museum's newest exhibit on ancient civilizations.",
+    "Autumn leaves drifted slowly to the ground as the wind picked up.",
+    "For context, here is some background before my actual question.",
+]
 
 
 def now() -> float:
@@ -52,18 +96,50 @@ def percentile(values: list[float], p: float) -> float:
     return float(np.percentile(values, p)) if values else float("nan")
 
 
-def build_requests(tokenizer, prompt_len: int, max_new_tokens: int, n: int, tag: str) -> list[Request]:
-    requests = []
+def distribution_stats(values: list[float]) -> dict:
+    arr = np.asarray(values, dtype=float)
+    return {"n": len(values), "min": float(arr.min()), "p50": float(np.percentile(arr, 50)), "max": float(arr.max()), "stdev": float(arr.std())}
+
+
+def _sample_prompt_len(rng: random.Random, workload: dict) -> int:
+    raw = rng.lognormvariate(math.log(workload["median_len"]), workload["sigma"])
+    return max(workload["min_len"], min(workload["max_len"], round(raw)))
+
+
+def _chat_ids(tokenizer, content: str) -> list[int]:
+    return tokenizer.apply_chat_template([{"role": "user", "content": content}], add_generation_prompt=True)["input_ids"]
+
+
+def chat_template_overhead(tokenizer) -> int:
+    """Fixed token cost the chat template adds around an empty user message —
+    reported so realized prompt-length numbers are interpretable, since every
+    prompt below pays this cost before a single word of filler or question."""
+    return len(_chat_ids(tokenizer, ""))
+
+
+def build_requests(tokenizer, workload: dict, max_new_tokens: int, n: int, tag: str) -> tuple[list[Request], list[int]]:
+    """Samples a prompt length per request from a lognormal-ish distribution
+    (seeded on (SEED, tag, i), NOT on engine name, so 'static' and 'engine'
+    cells at the same concurrency see identical prompts). Every prompt is run
+    through the real chat template — exactly what app.py does for a real
+    request — then padded with filler context (not the question) until the
+    sampled target length is met. Returns the requests plus the list of
+    ACTUAL realized (tokenized, verified) prompt lengths."""
+    requests, realized_lengths = [], []
     for i in range(n):
         rng = random.Random(f"{SEED}:{tag}:{i}")
-        text = " ".join(rng.choice(_FILLER_WORDS) for _ in range(prompt_len * 2))
-        ids = tokenizer.encode(text)
-        if len(ids) < prompt_len:
-            ids = ids * (prompt_len // max(len(ids), 1) + 1)
-        requests.append(
-            Request(request_id=f"{tag}-{i}", prompt_token_ids=ids[:prompt_len], max_new_tokens=max_new_tokens, arrival_time=0.0)
-        )
-    return requests
+        target_len = _sample_prompt_len(rng, workload)
+        question = rng.choice(_QUESTIONS[rng.choice(list(_QUESTIONS))])
+
+        filler = ""
+        ids = _chat_ids(tokenizer, question)
+        while len(ids) < target_len:
+            filler = (filler + " " + rng.choice(_FILLER_FRAGMENTS)).strip()
+            ids = _chat_ids(tokenizer, f"{filler}\n\n{question}")
+
+        realized_lengths.append(len(ids))
+        requests.append(Request(request_id=f"{tag}-{i}", prompt_token_ids=ids, max_new_tokens=max_new_tokens, arrival_time=0.0))
+    return requests, realized_lengths
 
 
 def run_workload(engine, requests: list[Request], stagger: float) -> tuple[list, int, float]:
@@ -126,16 +202,18 @@ class CellResult:
     per_request: list[dict]
 
 
-def measure_cell(engine_name, engine_obj, workload_name, prompt_len, max_new_tokens, concurrency, stagger, warmups) -> CellResult:
-    tag = f"{workload_name}-{engine_name}-c{concurrency}"
+def measure_cell(engine_name, engine_obj, workload_name, workload, max_new_tokens, concurrency, stagger, warmups) -> CellResult:
+    # seed tag deliberately excludes engine_name: 'static' and 'engine' cells at the
+    # same (workload, concurrency) must see IDENTICAL prompts for a fair comparison.
+    seed_tag = f"{workload_name}-c{concurrency}"
     for w in range(warmups):
-        reqs = build_requests(engine_obj.tokenizer, prompt_len, max_new_tokens, concurrency, f"{tag}-warmup{w}")
+        reqs, _ = build_requests(engine_obj.tokenizer, workload, max_new_tokens, concurrency, f"{seed_tag}-warmup{w}")
         run_workload(engine_obj, reqs, stagger)
 
     if hasattr(engine_obj, "reset_waste"):
         engine_obj.reset_waste()
 
-    reqs = build_requests(engine_obj.tokenizer, prompt_len, max_new_tokens, concurrency, tag)
+    reqs, prompt_lengths = build_requests(engine_obj.tokenizer, workload, max_new_tokens, concurrency, seed_tag)
     finished, num_waited, wall_clock = run_workload(engine_obj, reqs, stagger)
 
     output_tokens = sum(len(s.output_token_ids) for s in finished)
@@ -180,11 +258,15 @@ def _fmt(x, spec="{:.1f}"):
     return spec.format(x) if x is not None else ""
 
 
-def print_markdown_table(config: ServerConfig, workload_name: str, max_new_tokens: int, warmups: int, cells: list[CellResult]) -> None:
+def print_markdown_table(
+    config: ServerConfig, workload_name: str, max_new_tokens: int, warmups: int, template_overhead: int, cells: list[CellResult]
+) -> None:
     workload = WORKLOADS[workload_name]
     print()
     print(
-        f"### {workload_name} (prompt≈{workload['prompt_len']} tok, max_new_tokens={max_new_tokens}) — "
+        f"### {workload_name} (prompt lengths {workload['min_len']}-{workload['max_len']} tok, "
+        f"median~{workload['median_len']}, chat-template overhead={template_overhead} tok, "
+        f"max_new_tokens={max_new_tokens}) — "
         f"model={config.model_id}, device={config.device}, dtype={config.dtype}, "
         f"max_slots={config.max_slots}, max_seq_len={config.max_seq_len}, warmups={warmups}"
     )
@@ -199,6 +281,35 @@ def print_markdown_table(config: ServerConfig, workload_name: str, max_new_token
             _fmt(c.prefill_waste_frac, "{:.1%}"), _fmt(c.decode_waste_frac, "{:.1%}"), str(c.num_waited),
         ]
         print("| " + " | ".join(row) + " |")
+
+
+def print_length_distributions(cells: list[CellResult]) -> None:
+    """Pools per_request records across every cell of a workload so the
+    realized length spread — and hence the waste numbers above — has an
+    interpretable sample size, and to catch a workload that accidentally
+    produces zero output-length variance (every sequence stopping on length)."""
+    records = [r for c in cells for r in c.per_request]
+    prompt_lens = [r["prompt_tokens"] for r in records]
+    output_lens = [r["output_tokens"] for r in records]
+    num_eos = sum(1 for r in records if r["finish_reason"] == "stop")
+    num_length = sum(1 for r in records if r["finish_reason"] == "length")
+
+    p, o = distribution_stats(prompt_lens), distribution_stats(output_lens)
+    print(
+        f"prompt length (tokens, n={p['n']}): min={p['min']:.0f} p50={p['p50']:.0f} "
+        f"max={p['max']:.0f} stdev={p['stdev']:.1f}"
+    )
+    print(
+        f"output length (tokens, n={o['n']}): min={o['min']:.0f} p50={o['p50']:.0f} "
+        f"max={o['max']:.0f} stdev={o['stdev']:.1f}  ({num_eos} stopped on EOS, {num_length} stopped on length)"
+    )
+    if num_eos == 0:
+        print(
+            "WARNING: every sequence stopped on max_new_tokens — no natural output-length "
+            "variance was observed. decode_waste will read 0 and head-of-line blocking is "
+            "invisible in this run; do not report decode_waste from this run as evidence of "
+            "anything."
+        )
 
 
 def print_speedup_line(cells: list[CellResult], concurrencies: list[int]) -> None:
@@ -249,14 +360,15 @@ def main() -> None:
 
     print(f"Loading {config.model_id} on {config.device} ({config.dtype})...")
     base_engine = Engine(config)
+    template_overhead = chat_template_overhead(base_engine.tokenizer)
     engine_objs = {}
     for name in engine_names:
-        if name == "scheduler":
-            print("NOTE: engine 'scheduler' skipped — scheduler.py does not exist yet.")
-        elif name == "static":
+        if name == "static":
             engine_objs[name] = StaticBatchEngine(base_engine)
         elif name == "engine":
             engine_objs[name] = base_engine
+        elif name == "scheduler":
+            engine_objs[name] = ContinuousBatchScheduler(base_engine)
         else:
             raise ValueError(f"unknown engine {name!r}")
 
@@ -270,12 +382,13 @@ def main() -> None:
                 if engine_name not in engine_objs:
                     continue
                 cell = measure_cell(
-                    engine_name, engine_objs[engine_name], workload_name, workload["prompt_len"],
+                    engine_name, engine_objs[engine_name], workload_name, workload,
                     max_new_tokens, concurrency, args.stagger, args.warmups,
                 )
                 cells.append(cell)
                 all_results.append(cell)
-        print_markdown_table(config, workload_name, max_new_tokens, args.warmups, cells)
+        print_markdown_table(config, workload_name, max_new_tokens, args.warmups, template_overhead, cells)
+        print_length_distributions(cells)
         print_speedup_line(cells, concurrencies)
 
     if args.json:

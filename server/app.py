@@ -15,15 +15,18 @@ from pydantic import BaseModel
 
 from server.config import ServerConfig, load_config
 from server.engine import Engine
+from server.scheduler import ContinuousBatchScheduler
 from server.static_batch import StaticBatchEngine
 from server.types import Request as EngineRequest
 
 
 def build_engine(config: ServerConfig):
-    if config.engine == "scheduler":
-        raise NotImplementedError('engine: "scheduler" is not implemented yet — scheduler.py lands next')
     base = Engine(config)
-    return StaticBatchEngine(base) if config.engine == "static" else base
+    if config.engine == "static":
+        return StaticBatchEngine(base)
+    if config.engine == "scheduler":
+        return ContinuousBatchScheduler(base)
+    return base
 
 
 async def _run_loop(app: FastAPI) -> None:

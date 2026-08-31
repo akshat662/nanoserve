@@ -100,6 +100,11 @@ class Engine:
         q_len = max_len
         window = q_len  # write_start is 0 for every sequence in a prefill batch
 
+        # TIMING RULE (CLAUDE.md "Timing rules"): this is a START-of-work
+        # timestamp, captured before any forward pass is enqueued, so there is
+        # nothing to sync against yet — it is the one *_time field exempt from
+        # the "materialize-then-timestamp" rule below. Do not use this as a
+        # precedent for skipping the sync before a COMPLETION timestamp.
         now = time.time()
         for seq in seqs:
             seq.metrics.prefill_start_time = now
@@ -115,9 +120,12 @@ class Engine:
             "left-padding invariant violated: every sequence's last real token must land in the "
             "final column, but at least one row has padding there"
         )
-        # .tolist() forces the device-to-host sync in one shot; capturing `now`
-        # only after it returns means the timestamp reflects work actually
-        # finished, not merely enqueued (matters on CUDA, a no-op on CPU).
+        # TIMING RULE (CLAUDE.md "Timing rules"): first_token_time is a
+        # COMPLETION timestamp — it must never be captured before the GPU work
+        # it represents has actually finished. .tolist() forces the
+        # device-to-host sync in one shot; only call time.time() AFTER it
+        # returns. Reordering these two lines silently breaks TTFT on CUDA
+        # while looking completely correct on CPU.
         next_tokens = torch.argmax(out.logits[:, -1, :], dim=-1).tolist()
         now = time.time()
         for i, (seq, length) in enumerate(zip(seqs, lengths)):
@@ -146,8 +154,11 @@ class Engine:
             out = self.model(
                 input_ids, attention_mask=mask, position_ids=position_ids, past_key_values=self.cache, use_cache=True
             )
-        # see prefill(): materialize before timestamping so `now` reflects
-        # completed work, not just an enqueued kernel, when running on CUDA.
+        # TIMING RULE (CLAUDE.md "Timing rules"): same completion-timestamp
+        # requirement as prefill() above — materialize via .tolist() FIRST,
+        # then read time.time(), never the reverse. `now` here also becomes
+        # finish_time via _mark_if_finished(), so this is the only sync point
+        # for that field too.
         next_tokens = torch.argmax(out.logits[:, -1, :], dim=-1).tolist()
         now = time.time()
         for i, seq in enumerate(seqs):

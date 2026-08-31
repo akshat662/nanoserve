@@ -44,3 +44,27 @@ These constraints are load-bearing. Do not relax them without explicit instructi
   see tests/test_numerics.py.
 - float16 is not safe for correctness work: it would shrink that safety ratio by
   roughly three orders of magnitude.
+
+## Timing rules (learned the hard way)
+
+- CUDA is asynchronous. A timestamp taken before the GPU work has actually completed
+  measures nothing. Every timestamp in this repo must come AFTER a real sync point.
+- `.item()` and `.tolist()` are sync points; a bare tensor assignment is not. engine.py
+  originally captured `time.time()` before the `.item()` calls that pulled results off
+  the device, which meant every TTFT and finish_time on a GPU would have been recorded
+  early. Fixed by materializing results via `.tolist()` FIRST, then timestamping. This
+  was invisible on CPU and would never have surfaced in the test suite.
+- Rule for all future work: in any function that records a timestamp marking the
+  COMPLETION of GPU work (first_token_time, finish_time, and anything like them), the
+  line immediately before it must be either a `.tolist()`/`.item()` materialization or
+  an explicit `torch.cuda.synchronize()` guarded by `torch.cuda.is_available()`. No
+  exceptions, including in scheduler.py when it lands. The one narrow non-exception: a
+  START-of-work timestamp (e.g. prefill_start_time, captured before any forward pass is
+  enqueued) has nothing to sync against yet and isn't covered by this rule — don't treat
+  that as a loophole to skip syncing an actual completion timestamp.
+- bench.py's `now()` helper is the canonical implementation. Do not write ad-hoc
+  `time.perf_counter()` calls elsewhere in timed paths; import or mirror `now()`.
+- Second bug from the same session, also recorded: `submit()` does not consume a slot —
+  only `prefill()` inside `step()` does. Any caller checking `num_free_slots()` must
+  sample it once per scheduling iteration, not once per submission, or it will
+  over-admit and hit "no free slot".
