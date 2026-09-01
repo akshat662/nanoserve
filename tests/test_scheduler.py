@@ -85,8 +85,12 @@ def test_staggered_admission_matches_singles(small_slots_engine):
             pass  # scheduler is idle here; only used to keep the helper signature uniform
         sched_logits = torch.stack(logits_by_id[req.request_id], dim=0)
 
-        # recompute the solo run's logits directly for the delta comparison
-        solo_seq_ids = torch.tensor(req.prompt_token_ids).unsqueeze(0)
+        # recompute the solo run's logits directly for the delta comparison.
+        # This bypasses Engine.prefill()/decode() (which always build tensors
+        # with device=self.device), so device must be set explicitly here too
+        # — omitting it defaults to CPU and crashes at the embedding lookup
+        # the moment the model itself is on CUDA.
+        solo_seq_ids = torch.tensor(req.prompt_token_ids, device=engine.device).unsqueeze(0)
         with torch.no_grad():
             single_logits = []
             out = engine.model(solo_seq_ids, use_cache=True)
@@ -94,7 +98,7 @@ def test_staggered_admission_matches_singles(small_slots_engine):
             past = out.past_key_values
             cur = torch.argmax(out.logits[:, -1, :], dim=-1).unsqueeze(0)
             for step_i in range(1, len(solo.output_token_ids)):
-                pos = torch.tensor([[len(req.prompt_token_ids) + step_i - 1]])
+                pos = torch.tensor([[len(req.prompt_token_ids) + step_i - 1]], device=engine.device)
                 out = engine.model(cur, past_key_values=past, position_ids=pos, use_cache=True)
                 past = out.past_key_values
                 single_logits.append(out.logits[0, -1, :])

@@ -68,3 +68,15 @@ These constraints are load-bearing. Do not relax them without explicit instructi
   only `prefill()` inside `step()` does. Any caller checking `num_free_slots()` must
   sample it once per scheduling iteration, not once per submission, or it will
   over-admit and hit "no free slot".
+- Every tensor constructed anywhere in this repo must take its device explicitly —
+  from an existing tensor (`device=other.device`) or from config/engine
+  (`device=self.device`/`device=engine.device`) — never rely on the default. The
+  default is CPU, the whole test suite runs on CPU locally, and this class of bug
+  (a hand-built tensor with no device= reaching a CUDA model) passes 100% of tests
+  locally and only surfaces as a device-mismatch crash on the benchmark box. This bit
+  tests/test_scheduler.py: a manually reconstructed decode loop built `torch.tensor(...)`
+  with no `device=` and fed it straight into `engine.model(...)`, bypassing
+  Engine.prefill()/decode() (which always pass device=self.device) entirely. Engine.prefill
+  and Engine.decode now assert every tensor they build matches the model's actual device
+  before the forward pass, specifically so this fails loudly and immediately instead of
+  three frames deep inside an embedding lookup.

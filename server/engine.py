@@ -57,6 +57,20 @@ class Engine:
         self._pending: list[SequenceState] = []
         self._active: list[SequenceState] = []
 
+    def _assert_device(self, **tensors: torch.Tensor) -> None:
+        """Fails fast, at the boundary where tensors enter the model, instead
+        of deep inside an embedding lookup with a confusing device-mismatch
+        traceback. See CLAUDE.md: every tensor built in this repo must take
+        its device explicitly — the silent default is CPU, which is why this
+        class of bug passes the whole suite locally and only shows up on GPU."""
+        model_device = next(self.model.parameters()).device
+        for name, tensor in tensors.items():
+            if tensor.device != model_device:
+                raise AssertionError(
+                    f"{name} is on device {tensor.device!s}, but the model is on {model_device!s}. "
+                    "Every tensor fed into the model or cache must be built with device=self.device."
+                )
+
     def _mark_if_finished(self, seq: SequenceState, token_id: int, now: float) -> None:
         # TIMING RULE (CLAUDE.md "Timing rules"): `now` must already be a
         # post-sync timestamp handed in by the caller — this method performs
@@ -111,6 +125,9 @@ class Engine:
 
         self.cache.set_step(slot_ids, write_start, q_len)
         mask = self.cache.build_attention_mask(slot_ids, write_start, q_len, window)
+        self._assert_device(
+            input_ids=input_ids, attention_mask=mask, position_ids=position_ids, slot_ids=slot_ids, write_start=write_start
+        )
         with torch.no_grad():
             out = self.model(
                 input_ids, attention_mask=mask, position_ids=position_ids, past_key_values=self.cache, use_cache=True
@@ -150,6 +167,9 @@ class Engine:
         window = int((write_start + q_len).max())
         self.cache.set_step(slot_ids, write_start, q_len)
         mask = self.cache.build_attention_mask(slot_ids, write_start, q_len, window)
+        self._assert_device(
+            input_ids=input_ids, attention_mask=mask, position_ids=position_ids, slot_ids=slot_ids, write_start=write_start
+        )
         with torch.no_grad():
             out = self.model(
                 input_ids, attention_mask=mask, position_ids=position_ids, past_key_values=self.cache, use_cache=True
