@@ -48,6 +48,8 @@ Measured on a single T4, `Qwen/Qwen2.5-0.5B-Instruct`, float32, greedy decoding.
 discarded; latencies are percentiles, not means. TTFT is instrumented inside the
 engine, because a non-streaming HTTP response cannot expose it to the client.
 
+Raw stdout from the benchmark and test runs is committed under `results/`.
+
 **Staggered arrivals, short prompt / long generation** — 32 requests over 8s, 4 slots,
 `max_new_tokens=128`:
 
@@ -75,8 +77,12 @@ little for admission scheduling to exploit.
 
 | workload | prefill waste (padding) | decode waste (head-of-line) |
 |---|---|---|
-| short prompt / long gen | 50.0–51.5% | 18.9–22.6% |
+| short prompt / long gen | 37.3–51.5% | 18.9–22.6% |
 | long prompt / short gen | 15.7% | 6.1% |
+
+Padding waste tracks how much slot pressure the run is under: the widest figures
+come from the 8-slot burst configuration, the narrowest from the 4-slot staggered
+one, on the same workload.
 
 The two are tracked separately because they have different causes and different
 fixes. Padding waste is a function of prompt-length spread; head-of-line waste is

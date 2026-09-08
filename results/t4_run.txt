@@ -1,0 +1,141 @@
+nanoserve - CPU and T4 benchmark and test run logs
+Hardware: single NVIDIA T4 (Kaggle), 31 Aug 2026
+Model: Qwen/Qwen2.5-0.5B-Instruct, float32, sdpa
+transformers 5.16.1
+
+NOTE ON PROVENANCE: the raw --json dumps from the T4 session were not retained
+(the Kaggle notebook version was not saved before the session ended). Everything
+below is the verbatim stdout from that run, reproduced unmodified. The CPU
+numerics block was regenerated locally and is reproducible with
+`python -m pytest tests/test_numerics.py -s -q`.
+
+=== pytest, full suite (T4) ===
+.........................                                                [100%]
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+25 passed, 2 warnings in 60.51s (0:01:00)
+sys:1: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+
+
+=== numerics stats (T4) ===
+ [cv20] prompt 19 (id=cv-19): tokens_match=True max_logit_delta=4.816e-05
+
+max abs logit delta      : 1.357e-04
+min argmax margin        : 3.027e-02
+mean argmax margin       : 3.363e+00
+safety ratio (Y / X)     : 223.1
+decode steps compared    : 330
+prompts compared         : 20
+tightest step            : prompt 10 (id=cv-10), step 12, margin=3.027e-02, top1=' ability' top2=' capability'
+.
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+1 passed, 2 warnings in 16.26s
+sys:1: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+
+
+=== numerics stats (CPU, local) ===
+  [cv20] prompt 0 (id=cv-0): tokens_match=True max_logit_delta=1.073e-04
+  [cv20] prompt 1 (id=cv-1): tokens_match=True max_logit_delta=1.345e-04
+  [cv20] prompt 2 (id=cv-2): tokens_match=True max_logit_delta=1.049e-04
+  [cv20] prompt 3 (id=cv-3): tokens_match=True max_logit_delta=1.230e-04
+  [cv20] prompt 4 (id=cv-4): tokens_match=True max_logit_delta=1.488e-04
+  [cv20] prompt 5 (id=cv-5): tokens_match=True max_logit_delta=7.820e-05
+  [cv20] prompt 6 (id=cv-6): tokens_match=True max_logit_delta=6.008e-05
+  [cv20] prompt 7 (id=cv-7): tokens_match=True max_logit_delta=1.822e-04
+  [cv20] prompt 8 (id=cv-8): tokens_match=True max_logit_delta=6.294e-05
+  [cv20] prompt 9 (id=cv-9): tokens_match=True max_logit_delta=7.248e-05
+  [cv20] prompt 10 (id=cv-10): tokens_match=True max_logit_delta=1.020e-04
+  [cv20] prompt 11 (id=cv-11): tokens_match=True max_logit_delta=7.899e-05
+  [cv20] prompt 12 (id=cv-12): tokens_match=True max_logit_delta=8.726e-05
+  [cv20] prompt 13 (id=cv-13): tokens_match=True max_logit_delta=9.680e-05
+  [cv20] prompt 14 (id=cv-14): tokens_match=True max_logit_delta=6.008e-05
+  [cv20] prompt 15 (id=cv-15): tokens_match=True max_logit_delta=8.917e-05
+  [cv20] prompt 16 (id=cv-16): tokens_match=True max_logit_delta=1.030e-04
+  [cv20] prompt 17 (id=cv-17): tokens_match=True max_logit_delta=7.319e-05
+  [cv20] prompt 18 (id=cv-18): tokens_match=True max_logit_delta=8.249e-05
+  [cv20] prompt 19 (id=cv-19): tokens_match=True max_logit_delta=8.905e-05
+
+max abs logit delta      : 1.822e-04
+min argmax margin        : 3.027e-02
+mean argmax margin       : 3.363e+00
+safety ratio (Y / X)     : 166.2
+decode steps compared    : 330
+prompts compared         : 20
+tightest step            : prompt 10 (id=cv-10), step 12, margin=3.027e-02, top1=' ability' top2=' capability'
+.
+1 passed in 22.23s
+
+=== pytest, full suite (CPU, local) ===
+.........................                                                [100%]
+25 passed in 103.08s (0:01:43)
+
+=== bench: burst arrivals, short_prompt_long_gen (max_slots=8, c=1/8/32) ===
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading Qwen/Qwen2.5-0.5B-Instruct on cuda (torch.float32)...
+Loading weights: 100%|██████████| 290/290 [00:00<00:00, 538.61it/s]
+
+### short_prompt_long_gen (prompt lengths 40-250 tok, median~80, chat-template overhead=29 tok, max_new_tokens=128) — model=Qwen/Qwen2.5-0.5B-Instruct, device=cuda, dtype=torch.float32, max_slots=8, max_seq_len=1024, warmups=3
+
+| engine | concurrency | output_tok/s | ttft_p50_ms | ttft_p95_ms | e2e_p50_ms | e2e_p95_ms | prefill_waste | decode_waste | num_waited |
+|---|---|---|---|---|---|---|---|---|---|
+| static | 1 | 29.8 | 41.4 | 68.2 | 4202.3 | 4451.2 | 0.0% | 0.0% | 0 |
+| engine | 1 | 30.5 | 40.1 | 70.8 | 4150.9 | 4240.6 |  |  | 0 |
+| scheduler | 1 | 30.5 | 40.3 | 74.0 | 4145.2 | 4239.3 |  |  | 0 |
+| static | 8 | 157.7 | 539.3 | 616.7 | 4998.6 | 5183.1 | 50.0% | 22.6% | 0 |
+| engine | 8 | 161.3 | 560.5 | 656.8 | 4892.9 | 5095.4 |  |  | 0 |
+| scheduler | 8 | 160.7 | 582.1 | 688.8 | 4926.7 | 5176.2 |  |  | 0 |
+| static | 32 | 158.6 | 8413.5 | 16581.0 | 10976.2 | 21165.6 | 51.5% | 18.9% | 48 |
+| engine | 32 | 174.9 | 6136.0 | 14871.9 | 10901.9 | 17519.9 |  |  | 48 |
+| scheduler | 32 | 177.0 | 5976.9 | 14790.2 | 10702.8 | 17217.6 |  |  | 48 |
+prompt length (tokens, n=576): min=40 p50=81 max=260 stdev=57.0
+output length (tokens, n=576): min=8 p50=128 max=128 stdev=51.8  (168 stopped on EOS, 408 stopped on length)
+speedup @ concurrency 1: static=29.8 tok/s, engine=30.5 tok/s, static/engine ratio=0.98x
+speedup @ concurrency 8: static=157.7 tok/s, engine=161.3 tok/s, static/engine ratio=0.98x
+speedup @ concurrency 32: static=158.6 tok/s, engine=174.9 tok/s, static/engine ratio=0.91x
+
+wrote /kaggle/working/bench_short.json
+
+=== bench: staggered arrivals, short_prompt_long_gen (max_slots=4, c=32) ===
+ Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading Qwen/Qwen2.5-0.5B-Instruct on cuda (torch.float32)...
+Loading weights: 100%|██████████| 290/290 [00:00<00:00, 573.59it/s]
+
+### short_prompt_long_gen (prompt lengths 40-250 tok, median~80, chat-template overhead=29 tok, max_new_tokens=128) — model=Qwen/Qwen2.5-0.5B-Instruct, device=cuda, dtype=torch.float32, max_slots=4, max_seq_len=1024, warmups=2
+
+| engine | concurrency | output_tok/s | ttft_p50_ms | ttft_p95_ms | e2e_p50_ms | e2e_p95_ms | prefill_waste | decode_waste | num_waited |
+|---|---|---|---|---|---|---|---|---|---|
+| static | 32 | 79.7 | 14679.6 | 27912.2 | 18302.4 | 32177.6 | 37.3% | 22.6% | 27 |
+| scheduler | 32 | 108.3 | 6072.3 | 16415.6 | 10280.9 | 20676.1 |  |  | 28 |
+prompt length (tokens, n=64): min=41 p50=82 max=250 stdev=58.7
+output length (tokens, n=64): min=8 p50=128 max=128 stdev=50.1  (16 stopped on EOS, 48 stopped on length)
+
+wrote /kaggle/working/bench_stagger.json
+
+=== bench: staggered arrivals, long_prompt_short_gen (max_slots=4, c=16) ===
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading Qwen/Qwen2.5-0.5B-Instruct on cuda (torch.float32)...
+Loading weights: 100%|██████████| 290/290 [00:00<00:00, 539.39it/s]
+
+### long_prompt_short_gen (prompt lengths 150-500 tok, median~300, chat-template overhead=29 tok, max_new_tokens=16) — model=Qwen/Qwen2.5-0.5B-Instruct, device=cuda, dtype=torch.float32, max_slots=4, max_seq_len=1024, warmups=2
+
+| engine | concurrency | output_tok/s | ttft_p50_ms | ttft_p95_ms | e2e_p50_ms | e2e_p95_ms | prefill_waste | decode_waste | num_waited |
+|---|---|---|---|---|---|---|---|---|---|
+| static | 16 | 46.3 | 797.9 | 1219.2 | 1309.1 | 1716.8 | 15.7% | 6.1% | 0 |
+| scheduler | 16 | 54.4 | 117.0 | 179.3 | 841.9 | 1016.8 |  |  | 2 |
+prompt length (tokens, n=64): min=187 p50=299 max=509 stdev=86.6
+output length (tokens, n=64): min=8 p50=16 max=16 stdev=2.4  (14 stopped on EOS, 50 stopped on length)
+
+wrote /kaggle/working/bench_long.json
